@@ -8,22 +8,22 @@ import torch
 import torch.nn as nn
 
 import data
-import model
+from model import CBOW
 
 parser = argparse.ArgumentParser(description='CBOW')
 parser.add_argument('--data', type=str, default='./data/wikitext-2',
                     help='location of the data corpus')
 parser.add_argument('--emsize', type=int, default=200,
                     help='size of word embeddings')
-parser.add_argument('--lr', type=float, default=20,
+parser.add_argument('--lr', type=float, default=0.1,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
 parser.add_argument('--epochs', type=int, default=40,
                     help='upper epoch limit')
-parser.add_argument('--batch_size', type=int, default=20, metavar='N',
+parser.add_argument('--batch_size', type=int, default=200, metavar='N',
                     help='batch size')
-parser.add_argument('--windows', type=str, default="2 0",
+parser.add_argument('--windows', type=str, default="5 5",
                     help='left and right window size')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
@@ -45,6 +45,7 @@ parser.add_argument('--use_ngram', action='store_true',
                     help='use ngram')
 
 args = parser.parse_args()
+print(args)
 
 args.windows = args.windows.split()
 args.left_win = int(args.windows[0])
@@ -68,7 +69,8 @@ corpus = data.Corpus(
     input_extra_unk=input_extra_unk
 )
 
-def batchify(data, bsz):
+
+def batchify(data):
     data_size = data.size(0) - args.left_win - args.right_win
     context_size = args.left_win + 1 + args.right_win
     cbow_data = torch.zeros((data_size, context_size), dtype=data.dtype)
@@ -82,37 +84,54 @@ def batchify(data, bsz):
     return cbow_data.to(device), target_data.to(device)
 
 
-def batchify_ngram(data, bsz):
-    nbatch = data.size(0) // bsz
-    data = data.narrow(0, 0, nbatch * bsz)
-    data = data.view(bsz, nbatch, -1).t().contiguous()
-    return data.to(device)
+def get_batch(cbow_data, target, i):
+    cbow_data_batch = cbow_data[i:i+args.batch_size, :]
+    target_batch = target[i:i+args.batch_size]
+    return cbow_data_batch, target_batch
 
-
-eval_batch_size = 10
-train_data = batchify(corpus.train, args.batch_size)
-val_data = batchify(corpus.valid, eval_batch_size)
-test_data = batchify(corpus.test, eval_batch_size)
-
+full_cbow, full_target = batchify(corpus.train)
 # get fixed input data
-fixed_train_data = batchify(corpus.train_fixed, args.batch_size)
-fixed_val_data = batchify(corpus.valid_fixed, eval_batch_size)
-fixed_test_data = batchify(corpus.test_fixed, eval_batch_size)
+fixed_cbow, fixed_target = batchify(corpus.train_fixed)
+full_vocab_size = len(corpus.dictionary)
 
 cluster_train = None
-cluster_val = None
-cluster_test = None
 if args.cluster_path is not None:
-    cluster_train = batchify(corpus.cluster_train, args.batch_size)
-    cluster_val = batchify(corpus.cluster_valid, eval_batch_size)
-    cluster_test = batchify(corpus.cluster_test, eval_batch_size)
+    cluster_cbow, cluster_target = batchify(corpus.cluster_train)
 
-if args.use_ngram:
-    ngram_train = batchify_ngram(corpus.ngram_train, args.batch_size)
-    ngram_val = batchify_ngram(corpus.ngram_valid, eval_batch_size)
-    ngram_test = batchify_ngram(corpus.ngram_test, eval_batch_size)
+# Define model
+model = CBOW(
+    full_vocab_size,
+    args.emsize,
+    args.left_win + args.right_win
+).to(device)
 
-    ngram_train_len = None
-    ngram_valid_len = None
-    ngram_test_len = None
 
+# Training
+batch_number = full_cbow.size(0) // args.batch_size
+end_position = batch_number * args.batch_size - args.batch_size + 1
+
+criterion = nn.CrossEntropyLoss()
+
+print(f"start training")
+for epoch in range(1, args.epochs+1):
+    model.train()
+    total_loss = 0.
+    start_time = datetime.datetime.now()
+    for i in range(0, end_position, args.batch_size):
+        full_cbow_batch, full_target_batch = get_batch(full_cbow, full_target, i)
+
+        model.zero_grad()
+        output = model(full_cbow_batch)
+        loss = criterion(output.view(-1, full_vocab_size), full_target_batch)
+        loss.backward()
+
+        # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
+        #  torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+        for p in model.parameters():
+            if p.grad is not None:
+                p.data.add_(-args.lr, p.grad.data)
+
+        total_loss += loss.item()
+    end_time = datetime.datetime.now()
+    time_elapsed = f"{end_time - start_time}"
+    print(f"epoch {epoch} loss {total_loss:5.2f} time_elapsed: {time_elapsed}")

@@ -1,6 +1,6 @@
 set -x
 
-array=(toy)
+array=(penn)
 gpu_id="0"
 log="./log"
 echo "" >> $log
@@ -11,6 +11,6 @@ do
     map_path="$HOME/pytorch_examples/word_lm/data/clustercat/$element.cluster"
 
     python -u main.py --device "cuda:$gpu_id" --input_freq 5 --note "none" \
-    --save $save_model --data $data_path --epoch 30 --emsize 200  #>> $log
+    --save $save_model --data $data_path --epoch 5 --emsize 200  >> $log
 
 done
